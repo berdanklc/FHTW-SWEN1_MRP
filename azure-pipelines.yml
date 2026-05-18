@@ -2,7 +2,7 @@ trigger:
   - main
 
 pool:
-  vmImage: ubuntu-latest
+  name: Default
 
 variables:
   POSTGRES_DB: mrp_db
