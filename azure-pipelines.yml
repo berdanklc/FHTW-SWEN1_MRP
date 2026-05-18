@@ -9,37 +9,90 @@ variables:
   POSTGRES_USER: mrp_user
   DB_URL: jdbc:postgresql://localhost:5432/mrp_db
   DB_USERNAME: mrp_user
+  DEPLOY_DIR: 'C:\mrp-deployment'
 
-steps:
-  - script: |
-      docker compose up -d
-      sleep 20
-      docker ps
-    displayName: 'Start PostgreSQL Database for Tests'
-    env:
-      POSTGRES_DB: $(POSTGRES_DB)
-      POSTGRES_USER: $(POSTGRES_USER)
-      POSTGRES_PASSWORD: $(DB_PASSWORD)
+stages:
+  - stage: Build
+    displayName: 'Build and Test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build, Test and Publish Artifact'
+        steps:
+          - checkout: self
 
-  - task: Maven@3
-    displayName: 'Build and Test with Maven'
-    inputs:
-      mavenPomFile: 'pom.xml'
-      mavenOptions: '-Xmx3072m'
-      javaHomeOption: 'JDKVersion'
-      jdkVersionOption: '1.21'
-      jdkArchitectureOption: 'x64'
-      publishJUnitResults: true
-      testResultsFiles: '**/surefire-reports/TEST-*.xml'
-      goals: 'clean package'
-    env:
-      DB_URL: $(DB_URL)
-      DB_USERNAME: $(DB_USERNAME)
-      DB_PASSWORD: $(DB_PASSWORD)
+          - task: PowerShell@2
+            displayName: 'Start PostgreSQL Database for Tests'
+            inputs:
+              targetType: 'inline'
+              script: |
+                docker compose up -d
+                Start-Sleep -Seconds 20
+                docker ps
+            env:
+              POSTGRES_DB: $(POSTGRES_DB)
+              POSTGRES_USER: $(POSTGRES_USER)
+              POSTGRES_PASSWORD: $(DB_PASSWORD)
 
-  - task: PublishPipelineArtifact@1
-    displayName: 'Publish Executable JAR Artifact'
-    inputs:
-      targetPath: '$(System.DefaultWorkingDirectory)/target/Media-Ratings-Platform-1.0-SNAPSHOT.jar'
-      artifact: 'media-ratings-platform-jar'
-      publishLocation: 'pipeline'
+          - task: Maven@3
+            displayName: 'Build and Test with Maven'
+            inputs:
+              mavenPomFile: 'pom.xml'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.21'
+              jdkArchitectureOption: 'x64'
+              publishJUnitResults: true
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              goals: 'clean package'
+            env:
+              DB_URL: $(DB_URL)
+              DB_USERNAME: $(DB_USERNAME)
+              DB_PASSWORD: $(DB_PASSWORD)
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Executable JAR Artifact'
+            inputs:
+              targetPath: '$(System.DefaultWorkingDirectory)\target\Media-Ratings-Platform-1.0-SNAPSHOT.jar'
+              artifact: 'media-ratings-platform-jar'
+              publishLocation: 'pipeline'
+
+  - stage: Release
+    displayName: 'Release to Local Deployment Environment'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: Deploy
+        displayName: 'Deploy Executable JAR'
+        steps:
+          - download: current
+            artifact: media-ratings-platform-jar
+
+          - task: PowerShell@2
+            displayName: 'Deploy JAR to Local Deployment Folder'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $deployDir = "$(DEPLOY_DIR)"
+                $artifactPath = "$(Pipeline.Workspace)\media-ratings-platform-jar\Media-Ratings-Platform-1.0-SNAPSHOT.jar"
+                $targetJar = "$deployDir\Media-Ratings-Platform.jar"
+                $startScript = "$deployDir\start-mrp.ps1"
+
+                if (!(Test-Path $deployDir)) {
+                  New-Item -ItemType Directory -Path $deployDir | Out-Null
+                }
+
+                Copy-Item $artifactPath $targetJar -Force
+
+                @"
+                `$env:DB_URL = "jdbc:postgresql://localhost:5432/mrp_db"
+                `$env:DB_USERNAME = "mrp_user"
+                `$env:DB_PASSWORD = "<set-secret-before-start>"
+
+                java -jar "$targetJar"
+                "@ | Set-Content -Path $startScript -Encoding UTF8
+
+                Write-Host "Deployment completed successfully."
+                Write-Host "JAR deployed to: $targetJar"
+                Write-Host "Start script created at: $startScript"
+
+                Get-ChildItem $deployDir
