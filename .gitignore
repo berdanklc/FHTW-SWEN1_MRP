@@ -5,3 +5,6 @@ target/
 
 /.github/
 /angaben/
+
+.env
+*.env
