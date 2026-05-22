@@ -180,7 +180,14 @@ stages:
                   --resource-group $resourceGroup `
                   --name $webAppName `
                   --src-path $deployJar `
-                  --type jar
-
+                  --type jar `
+                  --track-status false
+                
+                $defaultHostName = az webapp show `
+                  --resource-group $resourceGroup `
+                  --name $webAppName `
+                  --query defaultHostName `
+                  --output tsv
+                
                 Write-Host "Azure deployment completed successfully."
-                Write-Host "Application URL: https://$webAppName.azurewebsites.net/api/health"
+                Write-Host "Application URL: https://$defaultHostName/api/health"
