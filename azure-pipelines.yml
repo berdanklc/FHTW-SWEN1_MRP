@@ -161,7 +161,7 @@ stages:
                   --resource-group $resourceGroup `
                   --name $webAppName `
                   --settings `
-                    DB_URL="jdbc:postgresql://$dbHost:5432/$dbName?sslmode=require" `
+                    DB_URL="jdbc:postgresql://${dbHost}:5432/${dbName}?sslmode=require" `
                     DB_USERNAME="$dbUser" `
                     DB_PASSWORD="$dbPassword" `
                     PORT="8080" `
