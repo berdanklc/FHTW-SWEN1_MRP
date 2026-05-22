@@ -7,9 +7,20 @@ pool:
 variables:
   POSTGRES_DB: mrp_db
   POSTGRES_USER: mrp_user
+
+  # Local test database for the Build and Test stage
   DB_URL: jdbc:postgresql://localhost:5432/mrp_db
   DB_USERNAME: mrp_user
+
+  # Local deployment folder on the self-hosted agent
   DEPLOY_DIR: 'C:\mrp-deployment'
+
+  # Azure deployment configuration
+  AZURE_RESOURCE_GROUP: devops-project
+  AZURE_WEBAPP_NAME: mrp-devops-api-berdan
+  AZURE_DB_HOST: mrp-postgres-berdan.postgres.database.azure.com
+  AZURE_DB_NAME: mrp_db
+  AZURE_DB_USERNAME: mrp_user
 
 stages:
   - stage: Build
@@ -33,6 +44,7 @@ stages:
             inputs:
               targetType: 'inline'
               script: |
+                docker compose down
                 docker compose up -d
                 Start-Sleep -Seconds 20
                 docker ps
@@ -64,13 +76,13 @@ stages:
               artifact: 'media-ratings-platform-jar'
               publishLocation: 'pipeline'
 
-  - stage: Release
+  - stage: ReleaseLocal
     displayName: 'Release to Local Deployment Environment'
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - job: Deploy
-        displayName: 'Deploy Executable JAR'
+      - job: DeployLocal
+        displayName: 'Deploy Executable JAR Locally'
         steps:
           - download: current
             artifact: media-ratings-platform-jar
@@ -99,8 +111,76 @@ stages:
                 java -jar "$targetJar"
                 "@ | Set-Content -Path $startScript -Encoding UTF8
 
-                Write-Host "Deployment completed successfully."
+                Write-Host "Local deployment completed successfully."
                 Write-Host "JAR deployed to: $targetJar"
                 Write-Host "Start script created at: $startScript"
 
                 Get-ChildItem $deployDir
+
+  - stage: DeployAzure
+    displayName: 'Deploy to Azure App Service'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: DeployToAzureAppService
+        displayName: 'Deploy Executable JAR to Azure App Service'
+        steps:
+          - download: current
+            artifact: media-ratings-platform-jar
+
+          - task: AzureKeyVault@2
+            displayName: 'Load DB password from Azure Key Vault'
+            inputs:
+              azureSubscription: 'sc-azure-keyvault-mrp'
+              KeyVaultName: 'mrp-devops'
+              SecretsFilter: 'DB-PASSWORD'
+              RunAsPreJob: false
+
+          - task: AzureCLI@2
+            displayName: 'Configure Azure App Service and deploy JAR'
+            inputs:
+              azureSubscription: 'sc-azure-keyvault-mrp'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                $resourceGroup = "$(AZURE_RESOURCE_GROUP)"
+                $webAppName = "$(AZURE_WEBAPP_NAME)"
+                $dbHost = "$(AZURE_DB_HOST)"
+                $dbName = "$(AZURE_DB_NAME)"
+                $dbUser = "$(AZURE_DB_USERNAME)"
+                $dbPassword = "$(DB-PASSWORD)"
+
+                $artifactPath = "$(Pipeline.Workspace)\media-ratings-platform-jar\Media-Ratings-Platform-1.0-SNAPSHOT.jar"
+                $deployJar = "$(Pipeline.Workspace)\app.jar"
+
+                Copy-Item $artifactPath $deployJar -Force
+
+                Write-Host "Configuring Azure App Service app settings..."
+
+                az webapp config appsettings set `
+                  --resource-group $resourceGroup `
+                  --name $webAppName `
+                  --settings `
+                    DB_URL="jdbc:postgresql://$dbHost:5432/$dbName?sslmode=require" `
+                    DB_USERNAME="$dbUser" `
+                    DB_PASSWORD="$dbPassword" `
+                    PORT="8080" `
+                    WEBSITES_PORT="8080"
+
+                Write-Host "Configuring Azure App Service startup command..."
+
+                az webapp config set `
+                  --resource-group $resourceGroup `
+                  --name $webAppName `
+                  --startup-file "java -jar /home/site/wwwroot/app.jar"
+
+                Write-Host "Deploying JAR to Azure App Service..."
+
+                az webapp deploy `
+                  --resource-group $resourceGroup `
+                  --name $webAppName `
+                  --src-path $deployJar `
+                  --type jar
+
+                Write-Host "Azure deployment completed successfully."
+                Write-Host "Application URL: https://$webAppName.azurewebsites.net/api/health"
